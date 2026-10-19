@@ -1257,6 +1257,9 @@ const (
 	// lastRetries is how many times the last one left is tried again after
 	// a failure that passes — a busy vendor, a dropped connection.
 	lastRetries = 2
+	// A standalone WorkBuddy model may end empty repeatedly. Groups keep
+	// their existing budget and move to the next model instead.
+	standaloneEmptyRetries = 5
 	// rateRetries is as many for a rate limit, which takes longer to
 	// clear than a busy moment: pauses of 1, 2 and 4s, or what Retry-After
 	// says, under half a minute in all
@@ -1272,8 +1275,13 @@ var retryPause = time.Second
 
 // passing says whether a failure is one that may be gone a moment later,
 // and how long to wait before trying the same one again, the again'th time.
-func passing(status int, header http.Header, body []byte, again int) (time.Duration, bool) {
+func passing(status int, header http.Header, body []byte, again int, group bool) (time.Duration, bool) {
+	retries := lastRetries
 	wait := retryPause << again
+	if !group && workbuddyEmpty(status, body) {
+		retries = standaloneEmptyRetries
+		wait = min(wait, 5*retryPause)
+	}
 	if d := retryAfter(header, time.Now()); d > 0 {
 		wait = d
 	}
@@ -1281,13 +1289,29 @@ func passing(status int, header http.Header, body []byte, again int) (time.Durat
 	case wait > longestPause:
 		return 0, false
 	case status == 408, status == 500, status == 502, status == 503, status == 504, status == 529:
-		return wait, again < lastRetries
+		return wait, again < retries
 	case status == 429:
 		// a relay's 429 often says nothing of when (#503: "负载已饱和，请稍
 		// 后再试"); a plan used up or no money left won't clear in seconds
 		return wait, again < rateRetries && failure(status, body) == failRate && !creditWords.Match(wordsOf(body))
 	}
 	return 0, false
+}
+
+// The plugin's synthetic 502, not an arbitrary vendor's empty reply.
+// Translation to Messages or Gemini drops its string code, but keeps the
+// distinctive message in every protocol.
+func workbuddyEmpty(status int, body []byte) bool {
+	if status != http.StatusBadGateway {
+		return false
+	}
+	var v struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	return json.Unmarshal(body, &v) == nil &&
+		strings.Contains(v.Error.Message, "WorkBuddy: "+emptyReply+"; upstream HTTP 200 contained no output")
 }
 
 // withRoom is, of the candidates left, those another member than c's may

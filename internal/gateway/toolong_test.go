@@ -119,11 +119,11 @@ func TestOutOfBudgetIsntRetriedInPlace(t *testing.T) {
 		if f := failure(tc.status, []byte(tc.msg)); f != failQuota {
 			t.Errorf("%d %q is a %s failure", tc.status, tc.msg, f)
 		}
-		if _, again := passing(tc.status, nil, []byte(tc.msg), 0); again {
+		if _, again := passing(tc.status, nil, []byte(tc.msg), 0, false); again {
 			t.Errorf("%d %q is asked again in place", tc.status, tc.msg)
 		}
 	}
-	if _, again := passing(429, nil, []byte("Rate limit reached for requests"), 0); !again {
+	if _, again := passing(429, nil, []byte("Rate limit reached for requests"), 0, false); !again {
 		t.Error("a rate limit isn't asked again")
 	}
 }
