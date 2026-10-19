@@ -2238,7 +2238,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	if isGroup {
 		patience = g.Waits()
 	} else {
-		heldRetries = max(heldRetries, standaloneEmptyRetries)
+		heldRetries = max(heldRetries, standaloneWorkBuddyRetries)
 	}
 	var busyNow []busyTry  // the members of this round that failed so
 	rounds := 0            // the rounds they were asked again in
@@ -2253,6 +2253,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	// and the provider's last answer, saved to disk, took seconds on a busy
 	// disk, and the reply's speed counted them as its own)
 	var ended time.Time
+	lastAttemptModel := ""
 	// the compaction a provider set to compact natively seals, read on the
 	// way to Codex, and who sealed it remembered once it has answered
 	// (#1099)
@@ -2585,6 +2586,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 				laneErr = err
 			}
 			if err == nil {
+				if isGroup && from == provider.Responses && streams && r.Header.Get(routingNoticeHeader) == "v1" {
+					next := c.p.ID + "/" + c.model
+					hw.routingNotice = routingNotice(call.Model, lastAttemptModel, next)
+					lastAttemptModel = next
+				}
 				if queued > 0 {
 					s.trace.update(tr, func(t *Route) { t.Tries[len(t.Tries)-1].Queued = queued })
 				}

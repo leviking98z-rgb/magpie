@@ -98,19 +98,32 @@ recorded as a prediction failure (`noPrediction`).
 ## Constraints and failure behavior
 
 - A standalone WorkBuddy plugin model's synthetic empty-answer 502
-  (`workbuddy_empty_reply`, with the native `emptyReply` wording) is retried
-  on the same candidate at most five times, six sends including the first
-  (`passing`, `standaloneEmptyRetries` in `fallback.go`). Pauses are 1, 2, 4,
-  5 and 5 seconds unless Retry-After says otherwise; a Retry-After over
+  (`workbuddy_empty_reply`, with the native `emptyReply` wording), or its
+  strictly classified generic input 11133 returned as a model-local 400,
+  is retried on the same candidate at most ten times, eleven sends including
+  the first (`passing`, `standaloneWorkBuddyRetries` in `fallback.go`).
+  The companion plugin enables `gatewayManagedRetries` for these models:
+  it sends once, leaving the retry budget to the gateway. The gateway only
+  extends the input-error budget for this one-send marker, not an older
+  plugin's two-send error. Pauses are 1, 2, 4, then at most 5 seconds unless Retry-After says otherwise; a Retry-After over
   `longestPause` is not waited for, and cancellation still stops the request.
   `serve` holds failures through that budget so no intermediate failure or
   empty success reaches the agent. Exhaustion is an explicit error, never
   a successful empty completion. Groups keep their existing next-member,
   last-candidate and patience behavior; other 5xx and rate limits keep their
-  budgets. `TestWorkBuddyEmptyStandaloneRetryBudget`,
+  budgets. `TestWorkBuddyStandaloneRetryBudget`,
   `TestWorkBuddyEmptyGroupsAndOtherFailuresUnchanged` and
   `TestWorkBuddyEmptyRetryPauses` cover the boundary and neighboring cases.
 - A fallback happens only while none of the reply has been sent. An agent never gets half a reply from one upstream and the rest from another.
+- Streamed Responses clients can opt into routing metadata with
+  `X-Magpie-Routing-Notice: v1`. For groups only, `response.magpie_routing`
+  carries `routing.from_model`, `routing.to_model` and `routing.fallback`.
+  It is released only with a successful candidate's stream, never with a
+  failed candidate or a keepalive. This is not assistant text and does not
+  change the requested group. A compatible Codex client shows the serving
+  model in its status line and a notice on failover; older clients remain
+  unchanged. Do not substitute `OpenAI-Model`, which Codex interprets as
+  safety-routing metadata.
 - A refusal that comes as an error (#2400, Jichao). An error whose own `message` is, whole, `The request was rejected because it was considered high risk` is a refusal with no code beside it (`highRiskRefusal` in `policyRefusal`): in an HTTP error body or a stream's error event, never in an answer's text, which may quote it. The vendor that sends it isn't known; it says the request was turned away, so it goes to the next candidate under `RefusalRetries` like any refusal and rests nobody. A refusal error event before any content ends the try at once (`eventRefusalError`, `stop` as for any error), so an upstream that keeps the stream open doesn't hold the next candidate back; a refusal's stop or finish marker is still read to the end for the usage and terminator after it. After content, every write is read for a late refusal (`refusalAfter`), so one whose `event: error` name and data come in separate writes is still noted, and nothing is replayed. `TestHighRisk*`, `TestRefusalErrorDoesNotWaitForEOF` in [`refusal_error_test.go`](../../internal/gateway/refusal_error_test.go).
 - A request is one usage record, counted once by how it ended (小一 on Discord: Codex on credits showed "5,482 · 1,094 failed" while rows said "2 tries/3 tries" and had been answered). The final record carries `tries` when the route took more than one (`rec.Tries`, from the trace's `Tries`). A try a vendor refused or turned away (`hw.refused`, `hw.turnedAway`) still writes its own record, for what it billed and why it failed, marked `handed_on`; `usage.Totals.count` skips such a record for calls and failures. A request failed only when the agent got an error (`LostRequest`); one answered after a failed try is counted beside it as answered on a retry (`Totals.Retried`, `RetriedRequest`, the `retried` filter). Logs written before `handed_on` are read the same way: the log index marks a failed, non-rejected record followed by another of the same route id as handed on (`routeRows` in [`log_index.go`](../../internal/usage/log_index.go)). Counts by account or route (`vias`, window holds) still count every try. A turn relayed on Codex's own ChatGPT sign-in is recorded as that codex account (`codexServed` in [`codex_backend.go`](../../internal/gateway/codex_backend.go)), so the account card's window counts it; the Routing view still names the seat OpenAI, an API-key call stays `openai` with no account, as does one whose `chatgpt-account-id` isn't the account Codex's auth.json here is signed in to (a Codex in WSL or under another `CODEX_HOME`), and a row already written without an account is left as it is. Those relay rows are still not a lead's answerer (`loggedAnswers`, #1367); a row an account answered, its host `host as email`, still is.
 - Each record keeps the service tier three ways (#1784): `tier_asked` is what the client's body asked (`bodyTier`; Claude's speed fast reads `fast`), `tier_sent` is what that try's last request went out with, noted in `forwardOnce` after every rewrite (fast picks, Ultrafast to priority on a plan without it) onto the per-attempt `wireAt`, and `tier_served` is only what the reply said it ran at (`upstreamTier`, read by the sniffer and the translated readers), empty when it says nothing. The route's tries carry `tier` and `tier_served` the same way. A bridge that doesn't go through `forwardOnce` (the Claude subscription, Cursor's built-in) leaves `tier_sent` empty. Code: [`tier_record.go`](../../internal/gateway/tier_record.go).

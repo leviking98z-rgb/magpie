@@ -1257,9 +1257,9 @@ const (
 	// lastRetries is how many times the last one left is tried again after
 	// a failure that passes — a busy vendor, a dropped connection.
 	lastRetries = 2
-	// A standalone WorkBuddy model may end empty repeatedly. Groups keep
-	// their existing budget and move to the next model instead.
-	standaloneEmptyRetries = 5
+	// The plugin hands these failures to the gateway without its own
+	// retries. Only a direct model uses this budget, never a group.
+	standaloneWorkBuddyRetries = 10
 	// rateRetries is as many for a rate limit, which takes longer to
 	// clear than a busy moment: pauses of 1, 2 and 4s, or what Retry-After
 	// says, under half a minute in all
@@ -1278,8 +1278,9 @@ var retryPause = time.Second
 func passing(status int, header http.Header, body []byte, again int, group bool) (time.Duration, bool) {
 	retries := lastRetries
 	wait := retryPause << again
-	if !group && workbuddyEmpty(status, body) {
-		retries = standaloneEmptyRetries
+	workbuddy := !group && workbuddyTransient(status, body)
+	if workbuddy {
+		retries = standaloneWorkBuddyRetries
 		wait = min(wait, 5*retryPause)
 	}
 	if d := retryAfter(header, time.Now()); d > 0 {
@@ -1288,6 +1289,8 @@ func passing(status int, header http.Header, body []byte, again int, group bool)
 	switch {
 	case wait > longestPause:
 		return 0, false
+	case workbuddy:
+		return wait, again < retries
 	case status == 408, status == 500, status == 502, status == 503, status == 504, status == 529:
 		return wait, again < retries
 	case status == 429:
@@ -1298,11 +1301,12 @@ func passing(status int, header http.Header, body []byte, again int, group bool)
 	return 0, false
 }
 
-// The plugin's synthetic 502, not an arbitrary vendor's empty reply.
+// The plugin's synthetic empty 502 or strictly classified input 400.
 // Translation to Messages or Gemini drops its string code, but keeps the
-// distinctive message in every protocol.
-func workbuddyEmpty(status int, body []byte) bool {
-	if status != http.StatusBadGateway {
+// distinctive message in every protocol. The input marker is for one send
+// only: older plugins' two-send errors must not multiply this budget.
+func workbuddyTransient(status int, body []byte) bool {
+	if status != http.StatusBadGateway && status != http.StatusBadRequest {
 		return false
 	}
 	var v struct {
@@ -1310,8 +1314,15 @@ func workbuddyEmpty(status int, body []byte) bool {
 			Message string `json:"message"`
 		} `json:"error"`
 	}
-	return json.Unmarshal(body, &v) == nil &&
-		strings.Contains(v.Error.Message, "WorkBuddy: "+emptyReply+"; upstream HTTP 200 contained no output")
+	if json.Unmarshal(body, &v) != nil {
+		return false
+	}
+	if status == http.StatusBadGateway {
+		return strings.Contains(v.Error.Message, "WorkBuddy: "+emptyReply+"; upstream HTTP 200 contained no output")
+	}
+	// Protocol adapters prefix this with the user's provider display name,
+	// which is not necessarily "WorkBuddy" (or even present before translation).
+	return strings.HasSuffix(v.Error.Message, "Model temporarily not available for this request after 1 upstream input rejections (WorkBuddy 11133: Invalid request parameters)")
 }
 
 // withRoom is, of the candidates left, those another member than c's may
@@ -1521,6 +1532,9 @@ type holdWriter struct {
 	// under mu: all keepAlive sends of the try's before it has its status,
 	// as until then the try is still writing header, with no lock
 	notes http.Header
+	// routingNotice is opt-in, metadata-only information about the actual
+	// group member. It stays held with the candidate's stream.
+	routingNotice []byte
 
 	first firstToken // when its first content and text came (#196)
 
@@ -2144,6 +2158,7 @@ var refusalSays = [][]byte{
 // flow lets a held stream through, and what follows it.
 func (h *holdWriter) flow() {
 	h.pass()
+	h.sendRoutingNotice()
 	h.sent(h.held.Bytes())
 	h.w.Write(h.held.Bytes())
 	h.held.Reset()
@@ -2279,6 +2294,7 @@ func (h *holdWriter) release() {
 		return
 	}
 	h.pass()
+	h.sendRoutingNotice()
 	h.w.Write(h.held.Bytes())
 	h.flush()
 }
