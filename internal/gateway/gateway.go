@@ -4171,6 +4171,9 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 		b, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 		res.Body.Close()
 		res.Body = io.NopCloser(bytes.NewReader(b))
+		if workbuddyTransient(res.StatusCode, b) {
+			break // The outer candidate loop owns this retry, not shape repair.
+		}
 		fs := refusedOptional(res.StatusCode, b, body)
 		// and an earlier turn's thinking sent back inside messages, which
 		// DeepSeek and Kimi want and a stricter vendor turns away (#494)
@@ -4894,6 +4897,11 @@ func (s *Server) forwardTranslated(ctx context.Context, p provider.Provider, to 
 		b, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 		res.Body.Close()
 		res.Body = io.NopCloser(bytes.NewReader(b))
+		if workbuddyTransient(res.StatusCode, b) {
+			// Do not guess that the cache key or an image tool caused this
+			// classified transient error: that would multiply upstream sends.
+			return res, to, nil
+		}
 		if to == provider.Anthropic && res.StatusCode == http.StatusBadRequest &&
 			samplingDeprecated.Match(b) && (req.Temp != nil || req.TopP != nil) {
 			// a Claude by a name samplingAsTaken can't read refuses the

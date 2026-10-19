@@ -14,6 +14,31 @@ const workbuddyEmptyBody = `{"error":{"message":"WorkBuddy: an empty reply (the 
 
 const workbuddyInputBody = `{"error":{"message":"WorkBuddy: Model temporarily not available for this request after 1 upstream input rejections (WorkBuddy 11133: Invalid request parameters)","type":"upstream_model_unavailable","code":11133}}`
 
+func TestWorkBuddyInputRepairDoesNotMultiply(t *testing.T) {
+	for _, proto := range []provider.Protocol{provider.Chat, provider.Responses} {
+		for _, group := range []bool{false, true} {
+			fresh(t)
+			a := &scripted{replies: []reply{{400, "application/json", workbuddyInputBody}}}
+			b := &scripted{replies: []reply{{400, "application/json", workbuddyInputBody}}}
+			scriptedOn(t, "a", proto, a)
+			scriptedOn(t, "b", proto, b)
+			model, want := "a/m", 11
+			if group {
+				if err := provider.SaveGroup(provider.Group{Name: "G", Members: []string{"a/m", "b/m"}, Routing: provider.Ordered, Patience: provider.PatienceOff}); err != nil {
+					t.Fatal(err)
+				}
+				model, want = "group/g", 1
+			}
+			body := `{"model":"` + model + `","stream":true,"input":"hi","prompt_cache_key":"thread-1","tools":[{"type":"image_generation"}]}`
+			w := httptest.NewRecorder()
+			New().Handler().ServeHTTP(w, httptest.NewRequest("POST", "/v1/responses", strings.NewReader(body)))
+			if w.Code != 400 || a.n != want || group && b.n != 1 || !group && b.n != 0 {
+				t.Fatalf("proto=%s group=%v status=%d sends=%d/%d: %s", proto, group, w.Code, a.n, b.n, w.Body.String())
+			}
+		}
+	}
+}
+
 func TestWorkBuddyStandaloneRetryBudget(t *testing.T) {
 	for _, failure := range []struct {
 		name   string
@@ -32,7 +57,7 @@ func TestWorkBuddyStandaloneRetryBudget(t *testing.T) {
 				path string
 				body string
 			}{
-				{"responses", "/v1/responses", `{"model":"a/m","input":"Reply OK","stream":true}`},
+				{"responses", "/v1/responses", `{"model":"a/m","input":"Reply OK","stream":true,"prompt_cache_key":"thread-1"}`},
 				{"chat", "/v1/chat/completions", `{"model":"a/m","messages":[{"role":"user","content":"Reply OK"}],"stream":true}`},
 				{"messages", "/v1/messages", `{"model":"a/m","messages":[{"role":"user","content":"Reply OK"}],"max_tokens":32,"stream":true}`},
 			} {

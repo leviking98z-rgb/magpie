@@ -109,7 +109,9 @@ recorded as a prediction failure (`noPrediction`).
   `longestPause` is not waited for, and cancellation still stops the request.
   `serve` holds failures through that budget so no intermediate failure or
   empty success reaches the agent. Exhaustion is an explicit error, never
-  a successful empty completion. Groups keep their existing next-member,
+  a successful empty completion. Classified errors bypass speculative
+  cache-key/image-tool repair so those inner retries cannot multiply sends.
+  Groups keep their existing next-member,
   last-candidate and patience behavior; other 5xx and rate limits keep their
   budgets. `TestWorkBuddyStandaloneRetryBudget`,
   `TestWorkBuddyEmptyGroupsAndOtherFailuresUnchanged` and
