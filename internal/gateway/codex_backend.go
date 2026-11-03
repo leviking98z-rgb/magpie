@@ -2283,6 +2283,8 @@ type compactResult struct {
 // compactReply reads the summary's reply, a Responses stream as Codex asks
 // for it or a response as a whole: the items from output_item.done (the
 // ChatGPT backend's completed response lists none), usage from completed.
+// When a completed stream has no message item, its output_text deltas are
+// the message; reasoning deltas are never taken for one.
 func compactReply(b []byte) (compactResult, error) {
 	var res compactResult
 	t := bytes.TrimSpace(b)
@@ -2291,12 +2293,14 @@ func compactReply(b []byte) (compactResult, error) {
 		return res, err
 	}
 	var items []compactOutput
+	var text strings.Builder
 	var failed string
 	readSSE(bytes.NewReader(b), func(_, data string) error {
 		var ev struct {
 			Type     string         `json:"type"`
 			Item     compactOutput  `json:"item"`
 			Response *compactResult `json:"response"`
+			Delta    string         `json:"delta"`
 			Message  string         `json:"message"` // an error event's
 			Error    *struct {
 				Message string `json:"message"`
@@ -2309,6 +2313,8 @@ func compactReply(b []byte) (compactResult, error) {
 			res.ID = ev.Response.ID
 		}
 		switch ev.Type {
+		case "response.output_text.delta":
+			text.WriteString(ev.Delta)
 		case "response.output_item.done":
 			items = append(items, ev.Item)
 		case "response.completed", "response.incomplete":
@@ -2336,6 +2342,14 @@ func compactReply(b []byte) (compactResult, error) {
 	}
 	if len(items) > 0 {
 		res.Output = items
+	}
+	if strings.TrimSpace(messageText(res)) == "" && strings.TrimSpace(text.String()) != "" {
+		message := compactOutput{Type: "message"}
+		message.Content = append(message.Content, struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}{Type: "output_text", Text: text.String()})
+		res.Output = append(res.Output, message)
 	}
 	return res, nil
 }
