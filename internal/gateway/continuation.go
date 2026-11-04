@@ -370,7 +370,9 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 	var failed, failedCode string
 	var failedStatus int
 	var cut, errSent bool
-	var empty bool // a reply in this protocol that says nothing fails (#667)
+	var empty bool          // a reply in this protocol that says nothing fails (#667)
+	var answerRequired bool // WorkBuddy Sol must produce an actionable reply
+	pendingBytes := 0
 	// counts: a reply in this protocol counts its tokens, and one that
 	// said nothing and counted none fails too (repliesCounted, #2086)
 	var counts bool
@@ -440,7 +442,21 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 			switch {
 			case saysSomething(ev):
 				said = true
-			case ev.Kind == KStop, ev.Kind == KUsage:
+				if answerRequired {
+					for _, pending := range kept {
+						cont.emit(enc, pending)
+					}
+					kept, pendingBytes = nil, 0
+				}
+			case ev.Kind == KStop, ev.Kind == KUsage, answerRequired && ev.Kind == KThink:
+				if answerRequired {
+					pendingBytes += len(ev.Text) + 128
+					if pendingBytes > workbuddyPendingMost {
+						failed = workbuddyPendingReply
+						cut = true
+						return
+					}
+				}
 				kept = append(kept, ev)
 				return
 			}
@@ -476,7 +492,8 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 		if err == nil {
 			u.RequestID = requestID(res.Header)
 			summaryUpstream = actual == provider.Responses || actual == provider.Gemini || actual == provider.CodeAssist
-			empty, counts = emptyFails(actual), repliesCounted(actual)
+			answerRequired = workbuddyAnswerRequired(p, actual, model)
+			empty, counts = emptyFails(actual) || answerRequired, repliesCounted(actual)
 		}
 		if err == nil && res.StatusCode >= 400 {
 			b, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
@@ -577,7 +594,7 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 			// ends the reply with the loop's error.
 			relooped = false
 			before, this = before.plus(this, false), Usage{}
-			kept, stop = nil, ""
+			kept, pendingBytes, stop = nil, 0, ""
 			enc.keepalive()
 			select {
 			case <-time.After(retryPause):
@@ -590,7 +607,7 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 				held()
 			}
 			if (empty || counts && uncounted(this)) && !said && answersNothing(stop) {
-				if empties < emptyRetries(w, r.Context()) && r.Context().Err() == nil {
+				if !answerRequired && empties < emptyRetries(w, r.Context()) && r.Context().Err() == nil {
 					// asked again here first, for the agent to have the
 					// answer rather than the error: Gemini on a long
 					// conversation now and then ends with only its
@@ -611,7 +628,9 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 				// and an agent told it tries again rather than end its
 				// turn (#667); a reply that said nothing has nothing to
 				// go on from, so it isn't continued
-				failed = p.Name + ": " + emptyReply
+				// The WorkBuddy guard uses the candidate loop's existing
+				// budget, with no extra sends inside translation.
+				failed = emptyReplyMessage(p, actual, model)
 				break
 			}
 			for _, ev := range kept {

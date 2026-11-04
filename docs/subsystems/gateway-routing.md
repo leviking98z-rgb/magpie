@@ -116,6 +116,27 @@ recorded as a prediction failure (`noPrediction`).
   budgets. `TestWorkBuddyStandaloneRetryBudget`,
   `TestWorkBuddyEmptyGroupsAndOtherFailuresUnchanged` and
   `TestWorkBuddyEmptyRetryPauses` cover the boundary and neighboring cases.
+- GPT-5.6-Sol's WorkBuddy Chat replies are checked again after translation
+  (`workbuddyAnswerRequired` in [`workbuddy_empty.go`](../../internal/gateway/workbuddy_empty.go)).
+  If the plugin passes a raw 200 that the decoder produces no answer or
+  tool call from, the gateway fails it with the same empty-reply marker,
+  not a successful `response.completed` with no output. Reasoning is held
+  until actionable output, with a 4 MiB pending limit; a pending reply past
+  that limit fails explicitly. A length or safety-filter stop keeps its own
+  meaning. The candidate loop owns the existing retry budget, so translation
+  adds no hidden sends, changes no model or effort, and reuses the completed
+  tool history unchanged. Groups keep their current routing and patience;
+  other vendors and WorkBuddy's other models retain their empty end-turn
+  semantics. `TestWorkBuddyRawEmptyCodexTurn` exercises both a main Codex
+  request and a subagent request through the plugin host and backend path.
+  `TestWorkBuddyRawEmptyShapesAndClients` checks reasoning-only, counted,
+  metadata-only and whole replies; `TestWorkBuddyRawAnswerAndTerminalReasons`
+  checks answers, calls, length and filter endings. `TestWorkBuddyRawPendingLimit`
+  keeps the holding bound a normal 502, not an account-quota failure, and
+  `TestWorkBuddyRawGroupBudgetUnchanged` checks the existing group budget.
+  Retry classification accepts the inner error object held from a failed
+  Responses/Messages event as well as a whole HTTP error envelope; malformed
+  JSON is never read as a plain error message (`TestWorkBuddyTransientStreamMessage`).
 - A fallback happens only while none of the reply has been sent. An agent never gets half a reply from one upstream and the rest from another.
 - Streamed Responses clients can opt into routing metadata with
   `X-Magpie-Routing-Notice: v1`. For groups only, `response.magpie_routing`

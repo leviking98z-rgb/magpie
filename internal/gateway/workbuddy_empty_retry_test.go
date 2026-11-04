@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -152,6 +153,37 @@ func TestWorkBuddyEmptyRetryPauses(t *testing.T) {
 		wait, ok := passing(502, http.Header{"Retry-After": {seconds}}, []byte(workbuddyEmptyBody), 4, false)
 		if seconds == "7" && (!ok || wait != 7*time.Second) || seconds == "9" && ok {
 			t.Errorf("Retry-After=%s: wait=%v ok=%v", seconds, wait, ok)
+		}
+	}
+}
+
+func TestWorkBuddyTransientStreamMessage(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		msg    string
+	}{
+		{502, "WorkBuddy: " + emptyReply + "; upstream HTTP 200 contained no output (no answer or tool call)"},
+		{400, "Renamed provider: Model temporarily not available for this request after 1 upstream input rejections (WorkBuddy 11133: Invalid request parameters)"},
+	} {
+		inner, err := json.Marshal(map[string]string{"code": "server_error", "message": tc.msg})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, body := range [][]byte{[]byte(tc.msg), inner, []byte(`{"error":` + string(inner) + `}`)} {
+			if !workbuddyTransient(tc.status, body) {
+				t.Errorf("held stream error lost its retry classification: %s", body)
+			}
+			if _, ok := passing(tc.status, nil, body, 9, false); !ok {
+				t.Errorf("held stream error lost its tenth retry: %s", body)
+			}
+			if _, ok := passing(tc.status, nil, body, 10, false); ok {
+				t.Errorf("held stream error exceeded its retry budget: %s", body)
+			}
+		}
+		for _, body := range [][]byte{[]byte(`{"error":` + tc.msg), append(append([]byte(nil), inner...), '!')} {
+			if workbuddyTransient(tc.status, body) {
+				t.Errorf("malformed JSON read as a plain stream message: %s", body)
+			}
 		}
 	}
 }

@@ -5507,7 +5507,7 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 	}
 	// a Gemini reply that says nothing is a failure, not a turn's end
 	// (#667)
-	empty := emptyFails(actual)
+	empty := emptyFails(actual) || workbuddyAnswerRequired(p, actual, model)
 	// calls a model wrote into its text are made calls (textcalls.go)
 	written := func(see func(Event)) (func(Event), func()) {
 		names := textCallNames(request.Tools)
@@ -5560,7 +5560,7 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 		return writeError(w, from, 502, msg), msg
 	}
 	if (empty || repliesCounted(actual) && uncounted(col.res.Usage)) && !saidAnything(col.res.Parts) && answersNothing(col.res.Stop) {
-		msg := p.Name + ": " + emptyReply
+		msg := emptyReplyMessage(p, actual, model)
 		return writeError(w, from, 502, msg), msg
 	}
 	if zen != nil {

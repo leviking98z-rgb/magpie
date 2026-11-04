@@ -1310,19 +1310,33 @@ func workbuddyTransient(status int, body []byte) bool {
 		return false
 	}
 	var v struct {
-		Error struct {
+		Message string `json:"message"`
+		Error   struct {
 			Message string `json:"message"`
 		} `json:"error"`
 	}
-	if json.Unmarshal(body, &v) != nil {
-		return false
+	var msg string
+	if json.Unmarshal(body, &v) == nil {
+		msg = v.Error.Message
+		if msg == "" {
+			// streamEvent keeps the inner error object from a failed
+			// Responses or Messages event in holdWriter.errBody.
+			msg = v.Message
+		}
+	} else {
+		// Some stream errors carry only their message. Keep the same
+		// strict markers, but never treat malformed JSON as plain text.
+		msg = strings.TrimSpace(string(body))
+		if msg == "" || strings.ContainsAny(msg[:1], "{[\"") {
+			return false
+		}
 	}
 	if status == http.StatusBadGateway {
-		return strings.Contains(v.Error.Message, "WorkBuddy: "+emptyReply+"; upstream HTTP 200 contained no output")
+		return strings.Contains(msg, "WorkBuddy: "+emptyReply+"; upstream HTTP 200 contained no output")
 	}
 	// Protocol adapters prefix this with the user's provider display name,
 	// which is not necessarily "WorkBuddy" (or even present before translation).
-	return strings.HasSuffix(v.Error.Message, "Model temporarily not available for this request after 1 upstream input rejections (WorkBuddy 11133: Invalid request parameters)")
+	return strings.HasSuffix(msg, "Model temporarily not available for this request after 1 upstream input rejections (WorkBuddy 11133: Invalid request parameters)")
 }
 
 // withRoom is, of the candidates left, those another member than c's may
@@ -3108,6 +3122,10 @@ func refusedReply(b []byte) (string, bool) {
 func streamStatus(msg string) int {
 	l := strings.ToLower(msg)
 	switch {
+	case strings.Contains(msg, workbuddyPendingReply):
+		// This is the gateway/plugin's holding bound, not the account's
+		// quota, despite "exceeded". Keep the ordinary 502 budget.
+		return http.StatusBadGateway
 	case tooLong(http.StatusBadRequest, msg):
 		// before the quota words: the ChatGPT backend's response.failed
 		// for a Codex conversation past the model's window says
