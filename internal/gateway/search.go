@@ -1095,15 +1095,51 @@ func (s *Server) askTranslated(p provider.Provider, to provider.Protocol, model 
 				}
 			}
 			var failed error
+			answerRequired := workbuddyAnswerRequired(p, actual, model)
+			said, errored, stop := false, false, ""
+			var kept []Event
+			pendingBytes := 0
+			pendingFailure := ""
 			told := time.Now() // when the reader was last sent anything
-			err := readSSEAlive(rd, func(_, data string) error {
-				if err := dec(data, func(ev Event) {
-					if failed == nil {
-						failed = send(ev)
-						told = time.Now()
+			emit := func(ev Event) {
+				if failed != nil || pendingFailure != "" {
+					return
+				}
+				errored = errored || ev.Kind == KError
+				if ev.Kind == KStop {
+					stop = ev.Stop
+				}
+				if answerRequired && !said {
+					switch {
+					case saysSomething(ev):
+						said = true
+						for _, pending := range kept {
+							if failed = send(pending); failed != nil {
+								return
+							}
+						}
+						kept, pendingBytes = nil, 0
+					case ev.Kind == KThink, ev.Kind == KUsage, ev.Kind == KStop:
+						// Codex's default web_search takes this path even without
+						// a search. Reasoning alone must not end that tool turn.
+						pendingBytes += len(ev.Text) + 128
+						if pendingBytes > workbuddyPendingMost {
+							pendingFailure = workbuddyPendingReply
+							return
+						}
+						kept = append(kept, ev)
+						return
 					}
-				}); err != nil {
+				}
+				failed = send(ev)
+				told = time.Now()
+			}
+			err := readSSEAlive(rd, func(_, data string) error {
+				if err := dec(data, emit); err != nil {
 					return err
+				}
+				if pendingFailure != "" {
+					return errStreamCut
 				}
 				return failed
 			}, func() {
@@ -1115,8 +1151,25 @@ func (s *Server) askTranslated(p provider.Provider, to provider.Protocol, model 
 					told = time.Now()
 				}
 			})
-			if err != nil && failed == nil && ctx.Err() == nil {
+			if failed != nil || ctx.Err() != nil {
+				return
+			}
+			switch {
+			case pendingFailure != "":
+				send(Event{Kind: KError, Text: pendingFailure, Status: http.StatusBadGateway})
+			case err != nil:
 				send(Event{Kind: KError, Text: p.Name + ": " + err.Error()})
+			case answerRequired && !said && !errored && answersNothing(stop):
+				// No new sends here: before output the candidate loop retries;
+				// after a search has run, report failure without replaying it.
+				send(Event{Kind: KError, Text: emptyReplyMessage(p, actual, model), Status: http.StatusBadGateway})
+			case !errored:
+				// Length and filter endings retain their incomplete semantics.
+				for _, ev := range kept {
+					if send(ev) != nil {
+						return
+					}
+				}
 			}
 		}()
 		return events, 0, ""

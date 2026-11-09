@@ -4229,12 +4229,22 @@ func relay(w http.ResponseWriter, r *http.Request, from provider.Protocol, name 
 		}
 		col.add(ev)
 	}
-	if col.err != "" && !saidAnything(col.res.Parts) {
+	if col.err != "" && (!saidAnything(col.res.Parts) || workbuddyNoAnswerFailure(col.err)) {
 		abort()
 		// a status, as in a stream, so another account can take over
 		usage.add(Usage{ErrType: col.errCode})
 		code, msg := bridgeFailed(name, col.err, col.errStatus)
-		return writeError(w, from, code, name+": "+msg), msg
+		status := writeError(w, from, code, name+": "+msg)
+		if workbuddyNoAnswerFailure(col.err) && slices.ContainsFunc(col.res.Parts, func(p Part) bool { return p.Kind == Search }) {
+			// A whole reply held for retry would run the completed search
+			// again. Publish this failure, as the streaming path already does.
+			if h, ok := w.(*holdWriter); ok {
+				h.mu.Lock()
+				h.release()
+				h.mu.Unlock()
+			}
+		}
+		return status, msg
 	}
 	ended(said, stop, col.err == "" && r.Context().Err() == nil)
 	if begin != nil {

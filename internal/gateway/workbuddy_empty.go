@@ -1,6 +1,11 @@
 package gateway
 
-import "github.com/yetone/magpie/internal/provider"
+import (
+	"net/http"
+	"strings"
+
+	"github.com/yetone/magpie/internal/provider"
+)
 
 // workbuddyAnswerRequired mirrors the plugin's GPT-5.6-Sol guard at the
 // translation boundary. A raw Chat 200 can pass the plugin's conservative
@@ -17,6 +22,12 @@ func workbuddyAnswerRequired(p provider.Provider, proto provider.Protocol, model
 const workbuddyPendingMost = 4 << 20
 
 const workbuddyPendingReply = "WorkBuddy: the pending reply exceeded its buffer limit before an answer or tool call; retry the same model"
+
+// A whole search reply may already contain the search's result when its
+// next model round fails. Those earlier parts don't make this an answer.
+func workbuddyNoAnswerFailure(msg string) bool {
+	return workbuddyTransient(http.StatusBadGateway, []byte(msg)) || strings.Contains(msg, workbuddyPendingReply)
+}
 
 func emptyReplyMessage(p provider.Provider, proto provider.Protocol, model string) string {
 	if workbuddyAnswerRequired(p, proto, model) {

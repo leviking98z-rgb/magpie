@@ -134,6 +134,21 @@ recorded as a prediction failure (`noPrediction`).
   checks answers, calls, length and filter endings. `TestWorkBuddyRawPendingLimit`
   keeps the holding bound a normal 502, not an account-quota failure, and
   `TestWorkBuddyRawGroupBudgetUnchanged` checks the existing group budget.
+  The same check runs in `askTranslated` for `searchReply`: Codex offers
+  native `web_search` even when it requests no search, selecting this path
+  instead of `streamTranslated`. Pending reasoning stays held while
+  `KAlive` still keeps the client alive. With no output sent, the candidate
+  loop may retry or fail over as before. If a search has already completed,
+  an empty later model round fails explicitly, including for a whole reply;
+  the error is published without retrying the entire request and running
+  that search again. `workbuddyNoAnswerFailure` also recognizes the plugin's
+  synthetic empty error on a later round. `TestWorkBuddySearchEmptyCodexTurn`,
+  `TestWorkBuddySearchRepliesAndBounds` and
+  `TestWorkBuddySearchEmptyAfterCompletedSearch` cover both reply formats,
+  main/subagent requests, unchanged model/effort and tool history, the
+  pending bound, terminal reasons, and completed searches not replayed.
+  `TestWorkBuddySearchPendingCancellation` checks client keepalives while
+  reasoning is held and cancellation closing the upstream without a retry.
   Retry classification accepts the inner error object held from a failed
   Responses/Messages event as well as a whole HTTP error envelope; malformed
   JSON is never read as a plain error message (`TestWorkBuddyTransientStreamMessage`).
